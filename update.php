@@ -1,56 +1,57 @@
 <?php
-require 'db.php';
+require __DIR__ . '/db.php';
+require __DIR__ . '/layout.php';
 
-if (!isset($_GET['id'])) {
-    header("Location: index.php");
-    exit;
+$pdo = db();
+
+$id = filter_var($_GET['id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+if ($id === false || $id === null) {
+    redirect('index.php');
 }
 
-$id = $_GET['id'];
-
-// Fetch user data to populate the form fields
-$stmt = $pdo->prepare("SELECT * FROM users WHERE id = ?");
-$stmt->execute([$id]);
-$user = $stmt->fetch();
-
+$user = find_user($pdo, $id);
 if (!$user) {
-    header("Location: index.php");
-    exit;
+    flash('error', 'That user no longer exists.');
+    redirect('index.php');
 }
 
-// Process update request
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $name = trim($_POST['name']);
-    $email = trim($_POST['email']);
+$values = ['name' => $user['name'], 'email' => $user['email']];
+$errors = [];
 
-    if (!empty($name) && !empty($email)) {
-        $stmt = $pdo->prepare("UPDATE users SET name = ?, email = ? WHERE id = ?");
-        if ($stmt->execute([$name, $email, $id])) {
-            header("Location: index.php");
-            exit;
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!csrf_check($_POST['csrf'] ?? null)) {
+        $errors['form'] = 'Your session expired. Please submit the form again.';
+    } else {
+        $v      = validate_user($_POST);
+        $values = ['name' => $v['name'], 'email' => $v['email']];
+        $errors = $v['errors'];
+
+        if (!$errors && email_taken($pdo, $v['email'], $id)) {
+            $errors['email'] = 'Another user already has that email.';
+        }
+
+        if (!$errors) {
+            try {
+                $pdo->prepare('UPDATE users SET name = ?, email = ? WHERE id = ?')
+                    ->execute([$v['name'], $v['email'], $id]);
+                flash('success', 'User “' . $v['name'] . '” was updated.');
+                redirect('index.php');
+            } catch (PDOException $e) {
+                if ($e->getCode() === '23000') {
+                    $errors['email'] = 'Another user already has that email.';
+                } else {
+                    error_log('update user failed: ' . $e->getMessage());
+                    $errors['form'] = 'Something went wrong while saving. Please try again.';
+                }
+            }
         }
     }
 }
+
+page_header('Edit User');
 ?>
-
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Update User</title>
-    <link rel="stylesheet" href="style.css">
-</head>
-<body>
-    <div class="container">
-        <h2>Modify User Record</h2>
-        <form method="POST">
-            <input type="text" name="name" value="<?= htmlspecialchars($user['name']) ?>" required>
-            <input type="email" name="email" value="<?= htmlspecialchars($user['email']) ?>" required>
-            <button type="submit">Update Record</button>
-            <a href="index.php" class="btn-secondary">Cancel</a>
-        </form>
+    <div class="card">
+        <h1>Modify User Record</h1>
+        <?php render_user_form($values, $errors, 'update.php?id=' . $id, 'Save Changes'); ?>
     </div>
-</body>
-</html>
-
-
-
+<?php page_footer();
